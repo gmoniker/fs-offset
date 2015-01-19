@@ -283,6 +283,13 @@ int dprebase(const char *fpath, const struct stat *sb, int tflag, struct FTW *ft
 			if (-1 == chown(fpath, g_difference + sb->st_uid, g_difference + sb->st_gid)) {
 				return -1; /* tell nftw() to stop */
 			}
+			//Unfortunately even when root does a chown the S_ISUID and/or S_ISGID bits may have become cleared
+			//Probably only on executable files, but lets make sure the mode that goes out is the same that came in
+			if (sb->st_mode & S_ISUID || sb->st_mode & S_ISGID) {
+				if (-1 == chmod(fpath, sb->st_mode)) {
+					return -1; /* tell nftw() to stop */
+				}
+			}
 		}
 		if (tflag == FTW_F) g_stats.numfiles++;
 		if (tflag == FTW_D) g_stats.numdirs++;	
