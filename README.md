@@ -1,8 +1,8 @@
-This program was written after experimenting with LXC.
+This program was written after experimenting with unprivileged LXC containers.
 
 LXC is a great tool but it also means your filesystem is filling with strangely numbered ids of files which will only work for a specific user using his alternative namespace. So, I sought a way to address this issue and thought it was also a great chance to brush up on the C language, and improve my knowledge of maintaining file systems.
 
-At first I just thought of shifting the user and group id's, but then I realized that extended posix ACL's are also something to be reckoned with. They also store numeric ids albeit inside extended attributes.
+At first I just thought of shifting the user and group id's, but then I realized that extended posix ACL's are also something to be reckoned with. They store numeric ids inside extended attributes. And I added a complete run through to check for showstoppers in the combination of parameters and files present.
 
 Some usage info then:
 
@@ -17,7 +17,7 @@ treeroot : the root of the tree to rebase.
 CAUTION: The filesystem under the treeroot must not be accessed when running this program.
 ```
 
-To compile you need to install the headers for libacl on your system and architecture, and link to libacl.
+To compile you need to install the headers for libacl and libe2p on your system and architecture, and link them.
 
 Special thanks go to:
 - The people that support GNU for their great toolchain.

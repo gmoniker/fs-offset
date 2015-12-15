@@ -30,6 +30,8 @@
 #include <stdbool.h>
 #include <sys/acl.h>
 #include "./acl_functions.h"
+#include <e2p/e2p.h>
+
 
 void print_usage(void) {
 	fprintf(stderr, "\nUsage:  -b base [-n] [-f] -- treeroot(single absolute path of dir)\
@@ -67,6 +69,7 @@ struct statistics {
 	const char *path;
 	bool hashardlinks;
 	bool hasposixacls;
+	bool hasimmutable;
 } g_stats;
 
 struct stat g_basestat;
@@ -170,7 +173,6 @@ struct inputs get_inputs(int argc, char **argv) {
 		print_usage();
 		exit(EXIT_FAILURE);
 	}
-	printf("Offset value: %" PRIu32 ".\n", offset);
 	if (optind < argc - 1) {
 		print_usage();
 		exit(EXIT_FAILURE);
@@ -192,8 +194,6 @@ struct inputs get_inputs(int argc, char **argv) {
 int basetest(char *path) {
 	//The workdir will be set to path if possible
 	struct stat statbuf;
-	char tempnam[15] = "SHRDLU$#@!.tmp";
-	int fd;
 	if (-1 == stat(path, &statbuf)) {
 		perror("stat impossible");
 		exit(EXIT_FAILURE);
@@ -207,32 +207,19 @@ int basetest(char *path) {
 		print_error("This program only runs with root privileges.");
 		exit(EXIT_FAILURE);
 	}
-	//Test creating a file on the basepath and modifying ownership
+	//Change to the root of the worktree
 	if (-1 == chdir(path)) {
 		perror("chdir");
 		exit(EXIT_FAILURE);
 	}
-	if (-1 == (fd = open(tempnam, O_CREAT | O_EXCL | O_RDONLY, S_IRUSR))) {
-		print_error("The program is unable to create its access testing file under the basepath.");
-		perror("open");
-		exit(EXIT_FAILURE);
-	}
-	if (-1 == fchown(fd, 0, 0)) {
-		print_error("The program is not able to change ownership of its testing file.");
-		perror("chown");
-		exit(EXIT_FAILURE);
-	}
-	if (-1 == unlink(tempnam)) {
-		print_error("The program is not able to remove its testing file.");
-		perror("unlink");
-		exit(EXIT_FAILURE);
-	}
-	close(fd);
 	return 0;
 }
 
 int dpinfo(const char *fpath, const struct stat *sb, int tflag, struct FTW *ftwbuf) {
-	g_stats.path = fpath;
+	if (NULL == (g_stats.path = strdup(fpath))) {
+		return -1;
+	}
+	unsigned long st_flags = 0;
 	/*
 	  printf("%-3s %2d %7ju   %-40s %d %s\n",
 			(tflag == FTW_D) ?   "d"   : (tflag == FTW_DNR) ? "dnr" :
@@ -251,6 +238,17 @@ int dpinfo(const char *fpath, const struct stat *sb, int tflag, struct FTW *ftwb
 		if (sb->st_nlink > 1) g_stats.hashardlinks = true;
 	}
 	if (tflag == FTW_D) g_stats.numdirs++;
+	if (tflag == FTW_F || tflag == FTW_D) {
+		if (-1 == fgetflags(fpath, &st_flags)) {
+			return -1; /* tell nftw() to stop */
+		} else {
+			if (st_flags & EXT2_IMMUTABLE_FL) {
+				g_stats.hasimmutable = true;
+				errno = EACCES;
+				return -1; /* tell nftw() to stop */
+			}
+		}
+	}
 	if (ftwbuf->level > g_stats.maxdepth) g_stats.maxdepth++;
 	if (g_inputs.pflag && !g_stats.hasposixacls) { 
 		//The assumption is a filesystem where acls on symlinks themselves aren't used
@@ -260,11 +258,15 @@ int dpinfo(const char *fpath, const struct stat *sb, int tflag, struct FTW *ftwb
 			if (has_extended_acls_lpath(fpath, isdir)) g_stats.hasposixacls = true;
 		} 
 	}
+	free((void *)g_stats.path);
+	g_stats.path = NULL;
 	return 0;           /* To tell nftw() to continue */
 }
 
 int dprebase(const char *fpath, const struct stat *sb, int tflag, struct FTW *ftwbuf) {
-	g_stats.path = fpath;
+	if (NULL == (g_stats.path = strdup(fpath))) {
+		return -1;
+	}
 	if (tflag == FTW_F || tflag == FTW_D) {
 		//Try to rebase this dir or file.
 		//But watch out for hardlinks multiplying the offset!
@@ -305,6 +307,8 @@ int dprebase(const char *fpath, const struct stat *sb, int tflag, struct FTW *ft
 			return -1; /* tell nftw() to stop */
 		}
 	}
+	free((void *)g_stats.path);
+	g_stats.path = NULL;
 	return 0;
 }
 
@@ -335,15 +339,21 @@ int main (int argc, char **argv)
 	g_stats.path = NULL;
 	g_stats.hashardlinks = false;
 	g_stats.hasposixacls = false;
+	g_stats.hasimmutable = false;
 
 	if (-1 == nftw(".", dpinfo, 2000, FTW_PHYS)) {
 		if (g_stats.path != NULL) {
-			fprintf(stderr, "Error: During scan at path <%s>\n", g_stats.path);
+			if (g_stats.hasimmutable) {
+				fprintf(stderr, "Error: Immutable file/dir at relative path <%s>\n", g_stats.path);
+			} else {
+				fprintf(stderr, "Error: During scan at path <%s>\n", g_stats.path);
+				perror("nftw");
+			}
 		}
-		perror("nftw");
 		exit(EXIT_FAILURE);
 	}
 	g_stats.numdirs--;
+	printf("Offset value: %" PRIu32 ".\n", offset_dest);
 	printf("Min uid: %ju, Max uid: %ju, Difference: %ju\n", (uintmax_t)g_stats.uid_min, (uintmax_t)g_stats.uid_max, (uintmax_t)(g_stats.uid_max - g_stats.uid_min));
 	printf("Min gid: %ju, Max gid: %ju, Difference: %ju\n", (uintmax_t)g_stats.gid_min, (uintmax_t)g_stats.gid_max, (uintmax_t)(g_stats.gid_max - g_stats.gid_min));
 	//The number of files includes devices, sockets, pipes, and fifos but not symlinks and does not unduplicate hardlinks
